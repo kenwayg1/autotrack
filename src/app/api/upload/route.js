@@ -1,8 +1,11 @@
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
-import { writeFile, mkdir } from "fs/promises";
-import path from "path";
+import crypto from "crypto";
 import { SESSION_COOKIE } from "@/lib/auth";
+
+const CLOUD_NAME = process.env.CLOUDINARY_CLOUD_NAME;
+const API_KEY    = process.env.CLOUDINARY_API_KEY;
+const API_SECRET = process.env.CLOUDINARY_API_SECRET;
 
 export async function POST(req) {
   const cookieStore = await cookies();
@@ -16,14 +19,29 @@ export async function POST(req) {
     return NextResponse.json({ error: "No file" }, { status: 400 });
   }
 
-  const bytes  = await file.arrayBuffer();
-  const buffer = Buffer.from(bytes);
-  const ext    = file.name.split(".").pop().toLowerCase().replace(/[^a-z0-9]/g, "");
-  const name   = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}.${ext}`;
-  const dir    = path.join(process.cwd(), "public", "uploads");
+  // Build signed upload request
+  const timestamp = Math.round(Date.now() / 1000);
+  const signature = crypto
+    .createHash("sha1")
+    .update(`timestamp=${timestamp}${API_SECRET}`)
+    .digest("hex");
 
-  await mkdir(dir, { recursive: true });
-  await writeFile(path.join(dir, name), buffer);
+  const uploadData = new FormData();
+  uploadData.append("file", file);
+  uploadData.append("api_key", API_KEY);
+  uploadData.append("timestamp", timestamp);
+  uploadData.append("signature", signature);
+  uploadData.append("folder", "autotrack");
 
-  return NextResponse.json({ url: `/uploads/${name}` });
+  const res  = await fetch(
+    `https://api.cloudinary.com/v1_1/${CLOUD_NAME}/image/upload`,
+    { method: "POST", body: uploadData }
+  );
+  const data = await res.json();
+
+  if (!res.ok) {
+    return NextResponse.json({ error: data.error?.message ?? "Upload failed" }, { status: 500 });
+  }
+
+  return NextResponse.json({ url: data.secure_url });
 }
